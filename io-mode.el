@@ -56,6 +56,7 @@
 (require 'font-lock)
 (require 'hideshow)
 (require 'newcomment)
+(require 'ansi-color)
 
 ;;
 ;; Customizable Variables
@@ -86,6 +87,53 @@
 (defcustom io-command "io"
   "The Io command used for evaluating code. Must be in your path."
   :type 'string
+  :group 'io)
+
+(defcustom io-command-args ""
+  "Arguments to the Io command used for evaluating code."
+  :type 'string
+  :group 'io)
+
+(defcustom io-shell-prompt-regexp "Io> "
+  "Regular Expression matching top\-level input prompt of io shell.
+It should not contain a caret (^) at the beginning."
+  :type 'string
+  :group 'io
+  :safe 'stringp)
+
+(defcustom io-shell-prompt-block-regexp "[.][.][.] "
+  "Regular Expression matching block input prompt of io shell.
+It should not contain a caret (^) at the beginning."
+  :type 'string
+  :group 'io
+  :safe 'stringp)
+
+(defcustom io-shell-prompt-output-regexp ""
+  "Regular Expression matching output prompt of io shell.
+It should not contain a caret (^) at the beginning."
+  :type 'string
+  :group 'python
+  :safe 'stringp)
+
+;; TODO match:
+;;
+;; Exception: Number does not respond to 'test'
+;; ---------
+;; Number test                          Command Line 1
+;;
+(defcustom io-shell-compilation-regexp-alist
+  `((,(rx line-start (1+ (any " \t")) "File \""
+          (group (1+ (not (any "\"<")))) ; avoid `<stdin>' &c
+          "\", line " (group (1+ digit)))
+     1 2)
+    (,(rx " in file " (group (1+ not-newline)) " on line "
+          (group (1+ digit)))
+     1 2)
+    (,(rx line-start "> " (group (1+ (not (any "(\"<"))))
+          "(" (group (1+ digit)) ")" (1+ (not (any "("))) "()")
+     1 2))
+  "`compilation-error-regexp-alist' for inferior Io."
+  :type '(alist string)
   :group 'io)
 
 (defvar io-mode-hook nil
@@ -379,7 +427,8 @@
   "Major mode for editing Io language..."
 
   (define-key io-mode-map (kbd "C-m") 'io-newline-and-indent)
-  (define-key io-mode-map (kbd "C-c <SPC>") 'io-repl)
+  ;; XXX
+  ;; (define-key io-mode-map (kbd "C-c <SPC>") 'io-repl)
   (define-key io-mode-map (kbd "C-c C-c") 'io-repl-sbuffer)
   (define-key io-mode-map (kbd "C-c C-r") 'io-repl-sregion)
   (define-key io-mode-map (kbd "C-c C-e") 'io-repl-sexp)
@@ -435,6 +484,79 @@
 (add-to-list 'auto-mode-alist '("\\.io$" . io-mode))
 
 
+
+;;
+;; Define Inferior Mode
+;;
+(defun io-comint-output-filter-function (output)
+  "Hook run after content is put into comint buffer.
+OUTPUT is a string with the contents of the buffer."
+  (ansi-color-filter-apply output))
+
+;; TODO io-shell-completion--do-completion-at-point
+(defun io-shell-completion-complete-at-point ()
+  "Perform completion at point in inferior Io process."
+  (interactive)
+  (and comint-last-prompt-overlay
+       (> (point-marker) (overlay-end comint-last-prompt-overlay))
+       (io-shell-completion--do-completion-at-point
+        (get-buffer-process (current-buffer)))))
+
+(defun io-shell-completion-complete-or-indent ()
+  "Complete or indent depending on the context.
+If content before pointer is all whitespace indent.  If not try
+to complete."
+  (interactive)
+  (if (string-match "^[[:space:]]*$"
+                    (buffer-substring (comint-line-beginning-position)
+                                      (point-marker)))
+      (indent-for-tab-command)
+    (comint-dynamic-complete)))
+
+(define-derived-mode inferior-io-mode comint-mode "Inferior Io"
+  "Major mode for Io inferior process.
+Runs a Io interpreter as a subprocess of Emacs, with Io
+I/O through an Emacs buffer.  Variables
+`python-shell-interpreter' and `python-shell-interpreter-args'
+controls which Python interpreter is run.  Variables
+`python-shell-prompt-regexp',
+`python-shell-prompt-output-regexp',
+`python-shell-prompt-block-regexp',
+`python-shell-completion-setup-code',
+`python-shell-completion-string-code',
+`python-shell-completion-module-string-code',
+`python-eldoc-setup-code', `python-eldoc-string-code',
+`python-ffap-setup-code' and `python-ffap-string-code' can
+customize this mode for different Python interpreters.
+
+You can also add additional setup code to be run at
+initialization of the interpreter via `python-shell-setup-codes'
+variable.
+
+\(Type \\[describe-mode] in the process buffer for a list of commands.)"
+  (set-syntax-table io-mode-syntax-table)
+  (setq mode-line-process '(":%s"))
+  (setq comint-prompt-regexp (format "^\\(?:%s\\|%s\\)"
+                                     io-shell-prompt-regexp
+                                     io-shell-prompt-block-regexp))
+  (make-local-variable 'comint-output-filter-functions)
+  (add-hook 'comint-output-filter-functions
+            'io-comint-output-filter-function)
+  (set (make-local-variable 'compilation-error-regexp-alist)
+       io-shell-compilation-regexp-alist)
+  (define-key inferior-io-mode-map [remap complete-symbol]
+    'completion-at-point)
+  (add-hook 'completion-at-point-functions
+            'io-shell-completion-complete-at-point nil 'local)
+  (add-to-list (make-local-variable 'comint-dynamic-complete-functions)
+               'io-shell-completion-complete-at-point)
+  (define-key inferior-python-mode-map (kbd "<tab>")
+    'io-shell-completion-complete-or-indent)
+  (compilation-shell-minor-mode 1))
+
+
+
 (provide 'io-mode)
 
 ;;; io-mode.el ends here
+ 
